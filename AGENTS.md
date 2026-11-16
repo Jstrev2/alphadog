@@ -15,6 +15,13 @@ starting feature work.
 
 ## Workflow
 
+- When asked to "commit changes and push to GitHub" (or anything like it), do
+  the whole flow without further questions: create a branch, run `npm run lint`
+  and `npm run build` and fix any errors, commit with a plain-English message,
+  push, open a pull request, merge it with `gh pr merge --merge --delete-branch`,
+  then switch back to an up-to-date `main`. Tell the user the live site updates
+  in about a minute. The person asking may be new to coding, so explain any
+  problem in plain words.
 - Never push straight to `main`. Work on a branch named `yourname/short-topic`,
   push it, and open a pull request.
 - Branch deploys are turned off (`vercel.json`). Test changes locally with
