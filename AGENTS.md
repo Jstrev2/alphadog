@@ -20,7 +20,9 @@ starting feature work.
 - Branch deploys are turned off (`vercel.json`). Test changes locally with
   `npm run dev` before opening a pull request.
 - Run `npm run lint` and `npm run build` before opening a pull request.
-- Jon reviews and merges pull requests. The repo only allows merge commits.
+- Merge your own pull request on GitHub once it builds and looks right. Ask Jon
+  for a second look on anything big. The repo only allows merge commits, and
+  `main` is protected, so every change goes through a pull request.
   Merging to `main` deploys to production on Vercel.
 
 ## Secrets

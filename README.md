@@ -54,6 +54,8 @@ New pilot areas go in `src/lib/areas.ts`, plus a `data:<area>` script in
 2. Build the change and test it with `npm run dev`.
 3. Run `npm run lint` and `npm run build`.
 4. Commit, push, and open a pull request.
-5. Jon reviews and merges. `main` goes live on Vercel a minute later.
+5. Merge the pull request on GitHub. `main` goes live on Vercel a minute later.
 
 Project rules for people and AI coding agents are in [`AGENTS.md`](AGENTS.md).
+VS Code offers the recommended extensions (Claude Code, Codex, ESLint,
+Prettier, Tailwind CSS) the first time you open the folder.
