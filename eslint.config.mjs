@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated: MapLibre worker copied in by scripts/copy-maplibre-worker.mjs
+    "public/vendor/**",
+    ".cache/**",
   ]),
 ]);
 
