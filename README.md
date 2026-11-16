@@ -14,7 +14,7 @@ Product notes live in [`docs/PRODUCT.md`](docs/PRODUCT.md).
 | App | Next.js 16, TypeScript, Tailwind | Runs on Vercel with no config. Ships first as a mobile web app (PWA). |
 | Map data | OpenStreetMap | Free, and already tags hydrants, trees, parks, dog parks, and bag stations. |
 | Base map | MapLibre GL JS + OpenFreeMap tiles | Free and open source, built-in heatmap layer, no API key or per-load bill. |
-| Database | Supabase (Postgres + PostGIS + Auth) | Geo queries, sign-in, and row-level security in one place. Not set up yet. |
+| Database | Supabase (Postgres + Auth) | Walker reports, anonymous sessions, and row-level security in one place. Schema lives in `supabase/migrations/`. |
 | Grid | H3 hex cells | Even buckets for heat scores, and hides exact report locations. |
 | Hosting | Vercel | `main` deploys to production. |
 

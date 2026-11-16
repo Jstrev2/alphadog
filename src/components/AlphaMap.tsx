@@ -1,13 +1,25 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { ExpressionSpecification, GeoJSONSourceSpecification, Map as MapLibreMap } from "maplibre-gl";
+import type { ExpressionSpecification, GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { isInArea, type Area } from "@/lib/areas";
 import { FEATURE_TYPES, type AreaData, type FeatureCode } from "@/lib/feature-types";
+import { fetchReportBuckets, REPORT_KINDS, timeAgo, type ReportKind } from "@/lib/reports";
+import { getSupabase } from "@/lib/supabase";
 
 export type Mode = "seek" | "avoid";
 export type MapStatus = "loading" | "ready" | "error";
+
+/** What the rest of the app can ask the map to do. */
+export type MapApi = {
+  /** [lon, lat] at the middle of the screen, where the report pin sits. */
+  getCenter: () => [number, number];
+  /** Flies to the walker's location. Resolves false if location isn't available. */
+  locate: () => Promise<boolean>;
+  /** Reloads walker reports for the current view. */
+  refreshReports: () => void;
+};
 
 type Props = {
   area: Area;
@@ -16,7 +28,19 @@ type Props = {
   recenterKey: number;
   onStatus: (status: MapStatus) => void;
   onOutsideArea: (outside: boolean) => void;
+  onApi: (api: MapApi | null) => void;
 };
+
+type PointFeature = GeoJSON.Feature<GeoJSON.Point, Record<string, unknown>>;
+const point = (lon: number, lat: number, properties: Record<string, unknown>): PointFeature => ({
+  type: "Feature",
+  geometry: { type: "Point", coordinates: [lon, lat] },
+  properties,
+});
+const collection = (features: PointFeature[]): GeoJSON.FeatureCollection<GeoJSON.Point> => ({
+  type: "FeatureCollection",
+  features,
+});
 
 const STYLE_URL = process.env.NEXT_PUBLIC_MAP_STYLE_URL || "https://tiles.openfreemap.org/styles/positron";
 
@@ -47,27 +71,16 @@ const SPOT_COLOR = [
   "#64748b",
 ] as unknown as ExpressionSpecification;
 
-function cellsToGeoJSON(data: AreaData): GeoJSONSourceSpecification["data"] {
-  return {
-    type: "FeatureCollection",
-    features: data.cells.map(([lon, lat, s]) => ({
-      type: "Feature",
-      geometry: { type: "Point", coordinates: [lon, lat] },
-      properties: { s },
-    })),
-  };
-}
+const PIN_KINDS = (Object.keys(REPORT_KINDS) as ReportKind[]).filter((k) => REPORT_KINDS[k].pin);
+const REPORT_PIN_COLOR = [
+  "match", ["get", "kind"],
+  ...PIN_KINDS.flatMap((k) => [k, REPORT_KINDS[k].color]),
+  "#64748b",
+] as unknown as ExpressionSpecification;
 
-function spotsToGeoJSON(data: AreaData): GeoJSONSourceSpecification["data"] {
-  return {
-    type: "FeatureCollection",
-    features: data.features.map(([lon, lat, t, name]) => ({
-      type: "Feature",
-      geometry: { type: "Point", coordinates: [lon, lat] },
-      properties: { t, name: name ?? null },
-    })),
-  };
-}
+const cellFeatures = (data: AreaData) => data.cells.map(([lon, lat, s]) => point(lon, lat, { s }));
+const spotFeatures = (data: AreaData) =>
+  data.features.map(([lon, lat, t, name]) => point(lon, lat, { t, name: name ?? null }));
 
 async function loadAreaData(area: Area): Promise<AreaData | null> {
   try {
@@ -79,20 +92,21 @@ async function loadAreaData(area: Area): Promise<AreaData | null> {
   }
 }
 
-export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideArea }: Props) {
+export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideArea, onApi }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const modeRef = useRef(mode);
-  const callbacksRef = useRef({ onStatus, onOutsideArea });
+  const callbacksRef = useRef({ onStatus, onOutsideArea, onApi });
 
   useEffect(() => {
-    callbacksRef.current = { onStatus, onOutsideArea };
-  }, [onStatus, onOutsideArea]);
+    callbacksRef.current = { onStatus, onOutsideArea, onApi };
+  }, [onStatus, onOutsideArea, onApi]);
 
   // Create the map once per area.
   useEffect(() => {
     let cancelled = false;
     let map: MapLibreMap | null = null;
+    let stopReports = () => {};
     callbacksRef.current.onStatus("loading");
 
     (async () => {
@@ -129,6 +143,69 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
         callbacksRef.current.onOutsideArea(!isInArea(area, e.coords.longitude, e.coords.latitude));
       });
 
+      // ---- Walker reports ----
+      const m = map;
+      let baseline: PointFeature[] = [];
+      let reportTimer: ReturnType<typeof setTimeout> | undefined;
+      let reportRequest = 0;
+
+      const loadReports = () => {
+        const sb = getSupabase();
+        if (!sb || cancelled || !m.getSource("report-pins") || m.getZoom() < 12) return;
+        const b = m.getBounds();
+        const padX = (b.getEast() - b.getWest()) * 0.2;
+        const padY = (b.getNorth() - b.getSouth()) * 0.2;
+        const box: [number, number, number, number] = [
+          b.getWest() - padX,
+          b.getSouth() - padY,
+          b.getEast() + padX,
+          b.getNorth() + padY,
+        ];
+        if (box[2] - box[0] > 0.5 || box[3] - box[1] > 0.5) return;
+        const request = ++reportRequest;
+        fetchReportBuckets(sb, box)
+          .then((buckets) => {
+            if (cancelled || request !== reportRequest) return;
+            // Pee and poop blend into the heat (no exact pins, for privacy).
+            // More reports in the same spot add more weight.
+            const reportHeat = buckets
+              .filter((r) => REPORT_KINDS[r.kind] && !REPORT_KINDS[r.kind].pin)
+              .map((r) => point(r.lon, r.lat, { s: Math.min(1, 0.6 + 0.2 * (r.n - 1)) }));
+            const pins = buckets
+              .filter((r) => REPORT_KINDS[r.kind]?.pin)
+              .map((r) => point(r.lon, r.lat, { kind: r.kind, n: r.n, last: r.last_at }));
+            (m.getSource("baseline") as GeoJSONSource | undefined)?.setData(collection([...baseline, ...reportHeat]));
+            (m.getSource("report-pins") as GeoJSONSource | undefined)?.setData(collection(pins));
+          })
+          .catch(() => {});
+      };
+      m.on("moveend", () => {
+        clearTimeout(reportTimer);
+        reportTimer = setTimeout(loadReports, 300);
+      });
+      stopReports = () => clearTimeout(reportTimer);
+
+      callbacksRef.current.onApi({
+        getCenter: () => {
+          const c = m.getCenter();
+          return [c.lng, c.lat];
+        },
+        locate: () =>
+          new Promise<boolean>((resolve) => {
+            if (!navigator.geolocation) return resolve(false);
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                if (cancelled) return resolve(false);
+                m.flyTo({ center: [pos.coords.longitude, pos.coords.latitude], zoom: Math.max(17, m.getZoom()) });
+                resolve(true);
+              },
+              () => resolve(false),
+              { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 },
+            );
+          }),
+        refreshReports: loadReports,
+      });
+
       map.on("load", async () => {
         const data = await dataPromise;
         if (cancelled || !map) return;
@@ -137,8 +214,10 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
           return;
         }
 
-        map.addSource("baseline", { type: "geojson", data: cellsToGeoJSON(data) });
-        map.addSource("spots", { type: "geojson", data: spotsToGeoJSON(data) });
+        baseline = cellFeatures(data);
+        map.addSource("baseline", { type: "geojson", data: collection(baseline) });
+        map.addSource("spots", { type: "geojson", data: collection(spotFeatures(data)) });
+        map.addSource("report-pins", { type: "geojson", data: collection([]) });
 
         // Draw the heat under street and place labels so names stay readable.
         const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
@@ -188,6 +267,37 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
             "circle-stroke-width": 2,
           },
         });
+        // Walker-reported pins get a dark ring so they read differently from map data.
+        map.addLayer({
+          id: "report-pins",
+          type: "circle",
+          source: "report-pins",
+          minzoom: 12,
+          paint: {
+            "circle-color": REPORT_PIN_COLOR,
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 4, 16, 8, 19, 11],
+            "circle-stroke-color": "#18181b",
+            "circle-stroke-width": 2,
+          },
+        });
+
+        map.on("click", "report-pins", (e) => {
+          const f = e.features?.[0];
+          if (!f || f.geometry.type !== "Point" || !map) return;
+          const kind = String(f.properties.kind) as ReportKind;
+          const n = Number(f.properties.n);
+          const box = document.createElement("div");
+          const title = document.createElement("strong");
+          title.textContent = REPORT_KINDS[kind]?.label ?? "Report";
+          const sub = document.createElement("div");
+          const when = timeAgo(String(f.properties.last));
+          sub.textContent = n > 1 ? `Reported ${n} times, last ${when}` : `Reported ${when}`;
+          box.append(title, sub);
+          new maplibregl.Popup({ closeButton: false, offset: 12 })
+            .setLngLat(f.geometry.coordinates as [number, number])
+            .setDOMContent(box)
+            .addTo(map);
+        });
 
         for (const layer of ["spots", "dog-parks"]) {
           map.on("click", layer, (e) => {
@@ -208,11 +318,14 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
               .setDOMContent(box)
               .addTo(map);
           });
+        }
+        for (const layer of ["spots", "dog-parks", "report-pins"]) {
           map.on("mouseenter", layer, () => map && (map.getCanvas().style.cursor = "pointer"));
           map.on("mouseleave", layer, () => map && (map.getCanvas().style.cursor = ""));
         }
 
         callbacksRef.current.onStatus("ready");
+        loadReports();
 
         // Jump to the walker's location right away if they already allowed it.
         navigator.permissions
@@ -226,6 +339,8 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
 
     return () => {
       cancelled = true;
+      stopReports();
+      callbacksRef.current.onApi(null);
       map?.remove();
       mapRef.current = null;
     };
