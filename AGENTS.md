@@ -29,6 +29,18 @@ starting feature work.
 - Local keys go in `.env.local`, which git ignores. Start from `.env.example`.
 - Never commit keys, and never paste them into issues, pull requests, or chat.
 
+## Database (Supabase)
+
+- Project `alphadog` in the AlphaDog Supabase organization (East US).
+- Every schema change is a new SQL file in `supabase/migrations/`, named
+  `YYYYMMDDHHMMSS_what_it_does.sql`. Apply it in the Supabase SQL editor, then
+  commit the file in the same pull request.
+- Every table gets row-level security and explicit grants. New tables are not
+  exposed automatically. The `anon` role gets no table access; public map data
+  goes through `security definer` functions that return grouped data only.
+- The app only uses the publishable key. Never put the secret key in app code
+  or anything prefixed `NEXT_PUBLIC_`.
+
 ## Data rules
 
 - Map data and the base map come from OpenStreetMap. Do not use Google Maps,

@@ -88,12 +88,22 @@ Walk data reveals where people live. Rules from day one:
 - Show reports as H3 cell aggregates, not exact pins, once a cell has enough.
 - Let each user set a home zone. Reports inside it are never shown publicly.
 
+Built so far: raw reports are readable only by the person who made them. The
+public map gets reports through `report_heat()`, grouped into ~11 m squares
+with counts and no user ids. Pee and poop only show blended into the heat,
+never as pins. Still to do: home zones, and a CAPTCHA on anonymous sign-ins
+before the app is promoted beyond the pilot.
+
 ## v1 plan
 
 1. Map with current location and the baseline heat layer for one pilot area,
    with the Seek / Avoid toggle. **Done 2026-11-16.**
-2. Sign-in and a report button. Reports show on the map.
-3. Blend baseline and reports into one score per cell.
+2. Report button. Reports show on the map. **Done 2026-11-16:** no sign-up
+   needed (anonymous Supabase sessions), Undo after each report, 30 reports
+   per hour per person.
+3. Blend baseline and reports into one score per cell. **Started:** pee and
+   poop reports already add weight to the heat. Next: proper per-cell scoring
+   and decay tuning.
 4. First badges.
 
 Ship as a mobile web app first (add to home screen). Move to a native app
