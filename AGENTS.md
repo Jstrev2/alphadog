@@ -37,6 +37,11 @@ starting feature work.
 - Do not load map tiles from `tile.openstreetmap.org`. Its usage policy does not
   allow app traffic. Use OpenFreeMap or another OSM tile host.
 - OpenStreetMap attribution must stay visible on every map view.
+- The app never calls the Overpass API at runtime. Baseline data is prebuilt by
+  `scripts/build-area.ts` into `public/data/areas/`, and that file is committed.
+- MapLibre 6 loads its worker from `public/vendor/`, copied there by the
+  `predev` and `prebuild` scripts. Don't commit it, and keep the `setWorkerUrl`
+  call in `src/components/AlphaMap.tsx`.
 - Keep the OSM-derived baseline in its own tables, separate from user reports.
   Combine them at query or render time.
 - Location privacy: never expose raw user tracks or a single user's report

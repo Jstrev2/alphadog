@@ -21,8 +21,17 @@ toggle: **Seek** or **Avoid**.
 
 ## Baseline heat map (before anyone reports anything)
 
-All baseline data comes from OpenStreetMap. Score each H3 hex cell from
-features that pull dogs in. Weights are guesses to tune later.
+All baseline data comes from OpenStreetMap. Each H3 hex cell (about 30 m
+across) gets a score from three things multiplied together:
+
+- **Walk:** how much walking route runs through it (sidewalks, quiet streets,
+  paths, park edges).
+- **Stops:** spots dogs stop at in or next to it (table below).
+- **Homes:** how many homes are within a few hundred meters. More homes, more
+  dogs. Apartment buildings count for more than houses.
+
+Weights are guesses to tune once reports come in. The scoring lives in
+`scripts/build-area.ts`.
 
 | Signal | OSM tag |
 | --- | --- |
@@ -35,12 +44,17 @@ features that pull dogs in. Weights are guesses to tune later.
 | Bag stations, dog waste bins | `vending=excrement_bags`, `waste=dog_excrement` |
 | Foot traffic | `highway=footway`, `footway=sidewalk` |
 
-Pull the data with the Overpass API for the pilot area, then store it in our
-own database so the app never calls Overpass live.
+The build script pulls the data from the Overpass API and writes a small file
+the app loads (`public/data/areas/<area>.json`). The app never calls Overpass
+live. The public Overpass servers are often busy, so the script retries
+across several of them.
 
-OSM coverage of hydrants and trees varies by town. Check the pilot area first.
-Where it's thin, we can add the missing hydrants and trees to OpenStreetMap
-ourselves, which helps everyone.
+**Pilot area: Sanford, FL.** First pull (2026-11-16): 514 sidewalks and paths,
+810 residential streets, about 7,500 buildings, 370 trees and tree rows, 123
+power poles, 13 parks, 2 dog parks, and only 3 fire hydrants. Hydrants are the
+big gap, which is why the score leans on walking routes and homes. Walker
+reports of hydrants (below) fill it in over time, and we can add hydrants to
+OpenStreetMap too.
 
 **Imagery:** Google Maps, Earth, and Street View terms forbid image analysis,
 tracing, and object detection, so we don't use them.
@@ -55,7 +69,7 @@ Three taps max: open, tap a type, confirm the pin at current location.
 - **Went here**: pee or poop
 - **Mess left**: waste not picked up
 - **Busy spot**: lots of dogs right now
-- **Bag station / trash can**: missing from the map
+- **Missing spot**: a hydrant, bag station, or trash can that isn't on the map
 
 Reports decay over time (a "busy spot" fades in an hour, a "went here" in
 weeks). Reports from the same user in the same cell count once per day.
@@ -76,10 +90,10 @@ Walk data reveals where people live. Rules from day one:
 
 ## v1 plan
 
-1. Map with current location and the baseline heat layer for one pilot area.
+1. Map with current location and the baseline heat layer for one pilot area,
+   with the Seek / Avoid toggle. **Done 2026-11-16.**
 2. Sign-in and a report button. Reports show on the map.
-3. Blend baseline and reports into one score per cell, with the Seek / Avoid
-   toggle.
+3. Blend baseline and reports into one score per cell.
 4. First badges.
 
 Ship as a mobile web app first (add to home screen). Move to a native app
@@ -89,5 +103,4 @@ or when App Store presence becomes the growth channel.
 ## Open questions
 
 - Domain name.
-- Pilot area: Naperville, a Chicago neighborhood, or wherever we walk dogs most.
 - Pee, poop, or both in v1.
