@@ -28,8 +28,9 @@ starting feature work.
 ## Secrets
 
 - Production keys live in the Vercel project settings.
-- Local keys go in `.env.local`, which git ignores. Start from `.env.example`.
-- Never commit keys, and never paste them into issues, pull requests, or chat.
+- Public, browser-safe defaults for local development live in `.env.development`.
+  Personal overrides go in `.env.local`, which git ignores.
+- Never commit secret keys, and never paste them into issues, pull requests, or chat.
 
 ## Database (Supabase)
 
