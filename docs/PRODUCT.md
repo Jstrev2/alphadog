@@ -38,6 +38,17 @@ across) gets a score from three things multiplied together:
 Weights are guesses to tune once reports come in. The scoring lives in
 `scripts/build-area.ts`.
 
+**Lesson from Andersonville (2026-11-23):** mapped trees and hydrants follow
+where OpenStreetMap volunteers have worked, not where dogs go. Clark Street had
+thousands of mapped trees and side streets like Paulina had none, so Paulina
+scored 0.2 while Clark scored 1.0. Now every residential street and sidewalk
+counts as a stop (city blocks are lined with parkway grass, trees, hydrants
+and poles, mapped or not), and mapped features only add a bonus.
+
+The app draws the heat as glowing lines along sidewalks and paths (like
+Strava's heatmap), not as blobs, because that's where dogs walk. Marks show
+on top as warm glows once 3 or more dogs use a spot.
+
 | Signal | OSM tag |
 | --- | --- |
 | Fire hydrants | `emergency=fire_hydrant` |

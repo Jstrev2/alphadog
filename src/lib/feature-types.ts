@@ -35,4 +35,6 @@ export type AreaData = {
   features: ([number, number, FeatureCode] | [number, number, FeatureCode, string])[];
   /** Turf block key (see src/lib/grid.ts) to a street name like "Clark & Berwyn" */
   tiles?: Record<string, string>;
+  /** Heat along sidewalks and paths: [score 0..1 in tenths, lon, lat, lon, lat, ...] */
+  streets?: number[][];
 };

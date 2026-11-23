@@ -405,13 +405,15 @@ function Shell({ cardDog, closeCard }: { cardDog: string | null; closeCard: () =
                 <button
                   type="button"
                   onClick={() => setInfoOpen(true)}
-                  className="pointer-events-auto flex items-center gap-2.5 rounded-2xl bg-white/95 py-2 pl-2 pr-3.5 text-left shadow-md ring-1 ring-black/5 backdrop-blur"
+                  aria-label="How AlphaDog works"
+                  className="pointer-events-auto flex h-12 items-center gap-2.5 rounded-2xl bg-white/95 pl-2 pr-2 text-left shadow-md ring-1 ring-black/5 backdrop-blur min-[400px]:pr-3"
                 >
                   <PawIcon className="size-8 shrink-0" />
-                  <span className="leading-tight">
+                  <span className="hidden leading-tight min-[400px]:block">
                     <span className="block text-[15px] font-bold tracking-tight text-zinc-900">AlphaDog</span>
                     <span className="block text-[11px] font-medium text-zinc-500">{area.name}</span>
                   </span>
+                  <InfoIcon className="hidden size-4 text-zinc-400 min-[400px]:block" />
                 </button>
               ) : (
                 <span />
@@ -459,8 +461,33 @@ function Shell({ cardDog, closeCard }: { cardDog: string | null; closeCard: () =
                 </Toast>
               )}
               {changes && !busyOverlay && <ChangesCard changes={changes} label={label} onClose={() => setChanges(null)} />}
+              {status === "ready" && game.ready && sb && !activeDog && !notice && !busyOverlay && !selectedTile && (
+                <button
+                  type="button"
+                  onClick={goCreateDog}
+                  className="pointer-events-auto flex w-full max-w-sm items-center gap-3 rounded-2xl bg-white/95 p-3 text-left shadow-lg ring-1 ring-black/5 backdrop-blur"
+                >
+                  <span className="text-3xl" aria-hidden="true">
+                    🐶
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-bold text-zinc-900">Every walk is a turf war</span>
+                    <span className="block text-xs text-zinc-600">Add your dog to start claiming blocks.</span>
+                  </span>
+                  <span className="shrink-0 rounded-full bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white">Add dog</span>
+                </button>
+              )}
             </div>
           </header>
+
+          <a
+            href="https://www.openstreetmap.org/copyright"
+            target="_blank"
+            rel="noreferrer"
+            className="absolute bottom-1.5 left-3 z-10 text-[10px] font-medium text-zinc-600 [text-shadow:0_0_3px_white,0_0_3px_white]"
+          >
+            © OpenStreetMap contributors
+          </a>
 
           {placing && (
             <>
@@ -473,22 +500,23 @@ function Shell({ cardDog, closeCard }: { cardDog: string | null; closeCard: () =
 
           {!busyOverlay && (
             <>
-              <div className="absolute bottom-5 left-3 z-10 flex flex-col gap-2">
-                <RoundButton label="Report a mess, busy spot or missing hydrant" onClick={startReport} hidden={!sb || status !== "ready"}>
-                  <FlagIcon className="size-5 text-zinc-700" />
-                </RoundButton>
-                {!isDesktop && (
-                  <RoundButton label="How AlphaDog works" onClick={() => setInfoOpen(true)}>
-                    <InfoIcon className="size-5 text-emerald-700" />
-                  </RoundButton>
-                )}
-              </div>
+              {sb && status === "ready" && (
+                <button
+                  type="button"
+                  onClick={startReport}
+                  title="Report a mess, a busy spot, or a hydrant the map is missing"
+                  className="absolute bottom-9 left-3 z-10 flex h-11 items-center gap-1.5 rounded-full bg-white/95 pl-3 pr-3.5 text-sm font-semibold text-zinc-700 shadow-md ring-1 ring-black/5 backdrop-blur active:scale-[0.98]"
+                >
+                  <FlagIcon className="size-4" />
+                  Report
+                </button>
+              )}
               {sb && status === "ready" && (
                 <button
                   type="button"
                   onClick={mark}
                   disabled={marking}
-                  className="absolute bottom-5 left-1/2 z-10 flex h-16 -translate-x-1/2 items-center gap-2.5 rounded-full bg-emerald-600 pl-5 pr-7 text-lg font-extrabold text-white shadow-xl shadow-emerald-900/30 ring-4 ring-white/80 transition hover:bg-emerald-700 active:scale-[0.97] disabled:opacity-80"
+                  className="absolute bottom-9 left-1/2 z-10 flex h-16 -translate-x-1/2 items-center gap-2.5 rounded-full bg-emerald-600 pl-5 pr-7 text-lg font-extrabold text-white shadow-xl shadow-emerald-900/30 ring-4 ring-white/80 transition hover:bg-emerald-700 active:scale-[0.97] disabled:opacity-80"
                 >
                   {marking ? <Spinner className="size-6" /> : <PawGlyph className="size-7" />}
                   {marking ? "Finding you…" : "Mark"}
@@ -631,7 +659,7 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => voi
           role="radio"
           aria-checked={view === o.value}
           onClick={() => onChange(o.value)}
-          className={`h-10 rounded-xl px-3.5 text-sm font-semibold transition-colors ${view === o.value ? o.active : "text-zinc-600 hover:bg-zinc-100"}`}
+          className={`h-10 rounded-xl px-3 text-sm font-semibold transition-colors min-[400px]:px-3.5 ${view === o.value ? o.active : "text-zinc-600 hover:bg-zinc-100"}`}
         >
           {o.label}
         </button>
@@ -684,21 +712,6 @@ function ChangesCard({ changes, label, onClose }: { changes: TurfChange[]; label
         {lines.length > 4 && <li className="text-zinc-500">and {lines.length - 4} more</li>}
       </ul>
     </div>
-  );
-}
-
-function RoundButton({ label, onClick, children, hidden }: { label: string; onClick: () => void; children: ReactNode; hidden?: boolean }) {
-  if (hidden) return null;
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      className="flex size-11 items-center justify-center rounded-2xl bg-white/95 shadow-md ring-1 ring-black/5 backdrop-blur active:scale-[0.98]"
-    >
-      {children}
-    </button>
   );
 }
 
