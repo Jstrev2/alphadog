@@ -25,7 +25,11 @@ body {
 
 /* MapLibre controls: bigger touch targets, level with the Mark button */
 .maplibregl-ctrl-bottom-right {
-  margin-bottom: 10px;
+  margin-bottom: 6px;
+}
+/* Keep the map credits on their own line, under the floating buttons. */
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib {
+  margin: 0;
 }
 .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group {
   border-radius: 16px;

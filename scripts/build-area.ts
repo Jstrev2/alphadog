@@ -9,8 +9,16 @@
 // Scoring, per H3 cell (resolution 11, about 30 m across):
 //   score = walk x stops x homes
 //   walk  = how much walking route runs through the cell (sidewalks, quiet streets, park edges)
-//   stops = spots dogs stop at, in or next to the cell (hydrants, trees, poles, dog parks)
+//   stops = spots dogs stop at, in or next to the cell. Every residential street
+//           and sidewalk counts, because city blocks are lined with parkway grass,
+//           trees, hydrants and poles whether or not anyone mapped them. Mapped
+//           hydrants, trees, poles and parks add a bonus on top.
 //   homes = how many homes are within a few hundred meters (more homes, more dogs)
+//
+// Lesson from the Andersonville pilot: mapped trees and hydrants follow where
+// OpenStreetMap volunteers have worked, not where dogs go. Clark Street had
+// thousands of mapped trees and quiet side streets like Paulina had none, so
+// they must stay a bonus and never decide the score on their own.
 // All weights are first guesses. Tune them as walker reports come in.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -228,6 +236,68 @@ function blockNames(roads: OsmElement[], bbox: [number, number, number, number])
   return out;
 }
 
+// ---------- street heat ----------
+
+const HEAT_WAYS = new Set(["footway", "path", "pedestrian", "living_street", "residential", "unclassified", "tertiary", "secondary", "primary"]);
+const ROADS = new Set(["living_street", "residential", "unclassified", "tertiary", "secondary", "primary"]);
+
+/**
+ * The heat drawn as lines along the sidewalks and paths where dogs actually
+ * walk, colored by the cell scores underneath. Road centerlines only count
+ * where no sidewalk is mapped next to them, so streets don't draw three times.
+ * Each line is [score, lon, lat, lon, lat, ...] with the score in tenths.
+ */
+function streetHeat(paths: OsmElement[], scoreByCell: Map<string, number>): number[][] {
+  const near = new Set<string>();
+  for (const el of paths) {
+    if (el.tags?.footway !== "sidewalk") continue;
+    for (const p of sampleLine(cleanGeom(el.geometry), 8)) for (const c of gridDisk(latLngToCell(p.lat, p.lon, 12), 2)) near.add(c);
+  }
+  const scoreAt = (p: LatLon) => {
+    const cell = latLngToCell(p.lat, p.lon, RES);
+    let sum = 0;
+    let w = 0;
+    for (const nb of gridDisk(cell, 1)) {
+      const s = scoreByCell.get(nb);
+      if (s === undefined) continue;
+      const k = nb === cell ? 2 : 1;
+      sum += s * k;
+      w += k;
+    }
+    return w ? sum / w : 0;
+  };
+  const out: number[][] = [];
+  for (const el of paths) {
+    const t = el.tags ?? {};
+    if (!HEAT_WAYS.has(t.highway ?? "") || t.footway === "crossing" || t.access === "private") continue;
+    const isRoad = ROADS.has(t.highway ?? "");
+    const pts = sampleLine(cleanGeom(el.geometry), 10);
+    let run: LatLon[] = [];
+    let runScore = -1;
+    const flush = () => {
+      if (run.length >= 2 && runScore >= 0.1) out.push([runScore, ...run.flatMap((q) => [+q.lon.toFixed(5), +q.lat.toFixed(5)])]);
+      run = [];
+      runScore = -1;
+    };
+    for (let i = 0; i < pts.length; i++) {
+      const q = pts[i];
+      if (isRoad && near.has(latLngToCell(q.lat, q.lon, 12))) {
+        flush();
+        continue;
+      }
+      const s = Math.round(scoreAt(q) * 10) / 10;
+      if (s !== runScore && run.length) {
+        run.push(q);
+        flush();
+      }
+      if (!run.length) runScore = s;
+      run.push(q);
+    }
+    flush();
+  }
+  return out;
+}
+
 // ---------- main ----------
 
 async function main() {
@@ -325,7 +395,7 @@ async function main() {
       add(stops, p, 2.5);
       feature(p, FEATURE_CODE.waste_station);
     } else if (t.natural === "tree") {
-      add(stops, p, 1);
+      add(stops, p, 0.3);
       feature(p, FEATURE_CODE.tree);
     } else if (t.highway === "street_lamp" || t.power === "pole" || t.man_made === "utility_pole") {
       add(stops, p, 0.6);
@@ -346,6 +416,9 @@ async function main() {
     living_street: 0.3, residential: 0.25, unclassified: 0.15, service: 0.15, tertiary: 0.08, secondary: 0.05,
     primary: 0.04,
   };
+  const PARKWAY: Record<string, number> = {
+    sidewalk: 0.5, living_street: 0.45, residential: 0.45, unclassified: 0.3, tertiary: 0.3, secondary: 0.25, primary: 0.2,
+  };
   for (const el of [...ways, ...mainRoads]) {
     const t = el.tags ?? {};
     if (t.highway && walkWeight[t.highway] !== undefined) {
@@ -353,7 +426,13 @@ async function main() {
       if (t.footway === "sidewalk") weight = 0.45;
       if (t.service === "driveway" || t.service === "drive-through") weight = 0.05;
       if (t.access === "private" && t.highway !== "service") weight *= 0.5;
-      for (const p of sampleLine(cleanGeom(el.geometry), 15)) add(walk, p, weight);
+      // Parkways: the grass strip, trees, hydrants and poles that line city
+      // sidewalks and residential streets, mapped or not.
+      const parkway = PARKWAY[t.footway === "sidewalk" ? "sidewalk" : t.highway] ?? 0;
+      for (const p of sampleLine(cleanGeom(el.geometry), 15)) {
+        add(walk, p, weight);
+        if (parkway) add(stops, p, parkway);
+      }
     } else if (t.natural === "tree_row") {
       for (const p of sampleLine(cleanGeom(el.geometry), 10)) add(stops, p, 0.5);
     } else if (t.leisure === "dog_park") {
@@ -425,11 +504,11 @@ async function main() {
     let stopSum = 0;
     for (const nb of gridDisk(cell, 1)) stopSum += (stops.get(nb) ?? 0) * (nb === cell ? 1 : 0.5);
     const walkN = 1 - Math.exp(-(walk.get(cell) ?? 0) / 1.0);
-    const stopN = 1 - Math.exp(-stopSum / 2);
-    const homeN = 0.3 + 0.7 * (1 - Math.exp(-(homesNear.get(cellToParent(cell, RES_HOMES)) ?? 0) / homeRef));
-    raw.push([cell, walkN * (0.2 + 0.8 * stopN) * homeN]);
+    const stopN = 1 - Math.exp(-stopSum / 2.5);
+    const homeN = 0.15 + 0.85 * (1 - Math.exp(-(homesNear.get(cellToParent(cell, RES_HOMES)) ?? 0) / homeRef));
+    raw.push([cell, walkN * (0.35 + 0.65 * stopN) * homeN]);
   }
-  const top = percentile(raw.map(([, v]) => v), 0.99) || 1;
+  const top = percentile(raw.map(([, v]) => v), 0.97) || 1;
   const cells: AreaData["cells"] = [];
   for (const [cell, value] of raw) {
     const score = Math.min(1, value / top);
@@ -439,6 +518,8 @@ async function main() {
   }
 
   const tiles = blockNames([...ways, ...mainRoads], area.bbox);
+  const scoreByCell = new Map(raw.map(([cell, value]) => [cell, Math.min(1, value / top)]));
+  const streets = streetHeat([...ways, ...mainRoads], scoreByCell);
 
   const out: AreaData = {
     v: 1,
@@ -450,6 +531,7 @@ async function main() {
     cells,
     features,
     tiles,
+    streets,
   };
   mkdirSync("public/data/areas", { recursive: true });
   const file = `public/data/areas/${area.id}.json`;
@@ -460,7 +542,7 @@ async function main() {
   console.log(`\nWrote ${file}`);
   console.log(`  ${cells.length} scored cells, ${features.length} map spots, ${homeCount} homes`);
   console.log(`  spots by type code: ${JSON.stringify(counts)}`);
-  console.log(`  ${Object.keys(tiles).length} named turf blocks`);
+  console.log(`  ${Object.keys(tiles).length} named turf blocks, ${streets.length} street heat lines`);
   console.log(`  size: ${(JSON.stringify(out).length / 1024).toFixed(0)} KB`);
 }
 

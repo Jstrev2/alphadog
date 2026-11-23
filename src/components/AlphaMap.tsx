@@ -83,6 +83,18 @@ const HEAT_COLORS: Record<View, ExpressionSpecification> = {
   ],
 };
 
+/** Street heat: color by score. Most city blocks score 0.6 to 1, so the ramp spends its range there. */
+const STREET_COLORS: Record<View, ExpressionSpecification> = {
+  turf: ["interpolate", ["linear"], ["get", "s"], 0.2, "#ccfbf1", 0.6, "#5eead4", 0.85, "#14b8a6", 1, "#0f766e"],
+  seek: ["interpolate", ["linear"], ["get", "s"], 0.3, "#ecfdf5", 0.6, "#a7f3d0", 0.75, "#34d399", 0.88, "#059669", 1, "#064e3b"],
+  avoid: ["interpolate", ["linear"], ["get", "s"], 0.3, "#fffbeb", 0.6, "#fde68a", 0.75, "#fb923c", 0.88, "#dc2626", 1, "#7f1d1d"],
+};
+const STREET_OPACITY: Record<View, [core: number, glow: number]> = {
+  turf: [0.5, 0.12],
+  seek: [0.95, 0.4],
+  avoid: [0.95, 0.4],
+};
+
 export const TURF_COLORS = { mine: "#10b981", taken: "#f97316", local: "#71717a" } as const;
 
 const SPOT_COLOR = [
@@ -148,7 +160,9 @@ export default function AlphaMap(props: Props) {
         maxZoom: 19,
         dragRotate: false,
         pitchWithRotate: false,
-        attributionControl: { compact: true },
+        // Full credits sit behind the (i) button. The page keeps an always
+        // visible OpenStreetMap credit of its own at the bottom left.
+        attributionControl: { compact: true, customAttribution: "Heat and turf: AlphaDog, from OpenStreetMap data" },
       });
       map.touchZoomRotate.disableRotation();
       mapRef.current = map;
@@ -168,7 +182,6 @@ export default function AlphaMap(props: Props) {
 
       // ---- Walker reports and dog heat ----
       const m = map;
-      let baseline: Feature[] = [];
       let reportTimer: ReturnType<typeof setTimeout> | undefined;
       let reportRequest = 0;
 
@@ -195,7 +208,7 @@ export default function AlphaMap(props: Props) {
             const pins = buckets
               .filter((r) => REPORT_KINDS[r.kind]?.pin)
               .map((r) => point(r.lon, r.lat, { kind: r.kind, n: r.n, last: r.last_at }));
-            (m.getSource("baseline") as GeoJSONSource | undefined)?.setData(collection([...baseline, ...dogHeat]));
+            (m.getSource("dog-heat") as GeoJSONSource | undefined)?.setData(collection(dogHeat));
             (m.getSource("report-pins") as GeoJSONSource | undefined)?.setData(collection(pins));
           })
           .catch(() => {});
@@ -237,8 +250,16 @@ export default function AlphaMap(props: Props) {
         }
         callbacksRef.current.onData(data);
 
-        baseline = data.cells.map(([lon, lat, s]) => point(lon, lat, { s }));
-        map.addSource("baseline", { type: "geojson", data: collection(baseline) });
+        const streets: Feature[] = (data.streets ?? []).map(([s, ...flat]) => ({
+          type: "Feature",
+          geometry: {
+            type: "LineString",
+            coordinates: Array.from({ length: flat.length / 2 }, (_, i) => [flat[2 * i], flat[2 * i + 1]]),
+          },
+          properties: { s },
+        }));
+        map.addSource("streets", { type: "geojson", data: collection(streets) });
+        map.addSource("dog-heat", { type: "geojson", data: collection([]) });
         map.addSource("spots", {
           type: "geojson",
           data: collection(data.features.map(([lon, lat, t, name]) => point(lon, lat, { t, name: name ?? null }))),
@@ -250,19 +271,48 @@ export default function AlphaMap(props: Props) {
 
         // Draw heat and turf under street and place labels so names stay readable.
         const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
+        // Where dogs walk: the sidewalks and paths, glowing by score.
         map.addLayer(
           {
-            id: "baseline-heat",
-            type: "heatmap",
-            source: "baseline",
+            id: "street-glow",
+            type: "line",
+            source: "streets",
+            layout: { "line-cap": "round", "line-join": "round" },
             paint: {
-              "heatmap-weight": ["^", ["get", "s"], 1.3],
-              "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 11, 0.9, 13, 1.3, 15, 1.4, 17, 1.4, 19, 1.2],
-              // Cells are about 50 m apart. Keep the radius at roughly twice that
-              // spacing on screen so the hexagon grid never shows through.
-              "heatmap-radius": ["interpolate", ["exponential", 2], ["zoom"], 11, 4, 14, 12, 15, 24, 16, 50, 17, 100, 19, 400],
+              "line-color": STREET_COLORS[viewRef.current],
+              "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 12, 3, 15, 9, 17, 20, 19, 44],
+              "line-blur": ["interpolate", ["exponential", 1.6], ["zoom"], 12, 2, 15, 6, 17, 14, 19, 30],
+              "line-opacity": STREET_OPACITY[viewRef.current][1],
+            },
+          },
+          firstLabel,
+        );
+        map.addLayer(
+          {
+            id: "street-core",
+            type: "line",
+            source: "streets",
+            layout: { "line-cap": "round", "line-join": "round" },
+            paint: {
+              "line-color": STREET_COLORS[viewRef.current],
+              "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 12, 0.8, 15, 2, 17, 4.5, 19, 9],
+              "line-opacity": STREET_OPACITY[viewRef.current][0],
+            },
+          },
+          firstLabel,
+        );
+        // Marks, once 3 or more dogs have used a spot, as warm glows on top.
+        map.addLayer(
+          {
+            id: "dog-heat",
+            type: "heatmap",
+            source: "dog-heat",
+            paint: {
+              "heatmap-weight": ["get", "s"],
+              "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 12, 0.8, 17, 1.4],
+              "heatmap-radius": ["interpolate", ["exponential", 2], ["zoom"], 12, 6, 15, 22, 17, 60, 19, 200],
               "heatmap-color": HEAT_COLORS[viewRef.current],
-              "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 11, 0.85, 17, 0.75, 19, 0.6],
+              "heatmap-opacity": 0.8,
             },
           },
           firstLabel,
@@ -285,7 +335,7 @@ export default function AlphaMap(props: Props) {
             type: "line",
             source: "turf",
             minzoom: 13,
-            paint: { "line-color": "#0f172a", "line-opacity": 0.14, "line-width": 1 },
+            paint: { "line-color": "#0f172a", "line-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0.05, 16, 0.12], "line-width": 1 },
           },
           firstLabel,
         );
@@ -397,6 +447,8 @@ export default function AlphaMap(props: Props) {
           map.on("mouseleave", layer, () => (m.getCanvas().style.cursor = ""));
         }
 
+        // MapLibre opens the compact credits on load. Fold them into the (i).
+        containerRef.current?.querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show");
         loadedRef.current = true;
         drawTurf(m, area, stateRef.current.board);
         drawZone(m, stateRef.current.zone);
@@ -456,7 +508,10 @@ export default function AlphaMap(props: Props) {
 }
 
 function applyView(map: MapLibreMap, view: View) {
-  map.setPaintProperty("baseline-heat", "heatmap-color", HEAT_COLORS[view]);
+  map.setPaintProperty("dog-heat", "heatmap-color", HEAT_COLORS[view]);
+  for (const id of ["street-glow", "street-core"]) map.setPaintProperty(id, "line-color", STREET_COLORS[view]);
+  map.setPaintProperty("street-core", "line-opacity", STREET_OPACITY[view][0]);
+  map.setPaintProperty("street-glow", "line-opacity", STREET_OPACITY[view][1]);
   for (const id of TURF_LAYERS) map.setLayoutProperty(id, "visibility", view === "turf" ? "visible" : "none");
 }
 

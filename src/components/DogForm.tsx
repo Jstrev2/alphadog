@@ -56,7 +56,13 @@ export function DogForm({ dog, onDone, onCancel }: { dog?: Dog; onDone: (dog: Do
     <form onSubmit={save} className="space-y-4">
       <div className="flex items-center gap-4">
         <label className="group relative cursor-pointer">
-          <DogAvatar name={name || "?"} path={dog?.photo_path} previewUrl={preview} className="size-24 text-5xl" />
+          {dog?.photo_path || preview || name ? (
+            <DogAvatar name={name || "?"} path={dog?.photo_path} previewUrl={preview} className="size-24 text-5xl" />
+          ) : (
+            <span className="flex size-24 items-center justify-center rounded-full border-2 border-dashed border-zinc-300 bg-zinc-50 text-4xl" aria-hidden="true">
+              🐶
+            </span>
+          )}
           <span className="absolute -bottom-1 -right-1 rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-emerald-700 shadow ring-1 ring-zinc-200 group-hover:bg-emerald-50">
             {dog?.photo_path || preview ? "Change" : "Add photo"}
           </span>

@@ -30,7 +30,7 @@ export function LeadersPanel() {
   const alpha = rows?.[0];
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-4 p-4 pt-5">
       <div>
         <h2 className="text-xl font-bold text-zinc-900">Leaderboard</h2>
         <p className="text-sm text-zinc-500">One point for each different spot your dog marks, once a day.</p>
@@ -69,9 +69,15 @@ export function LeadersPanel() {
       )}
 
       {rows && rows.length === 0 && (
-        <div className="rounded-2xl border border-dashed border-zinc-300 p-6 text-center text-sm text-zinc-600">
-          No marks yet this {PERIOD_NAMES[period].toLowerCase()}
-          {size ? ` from ${sizeLabel(size).toLowerCase()} dogs` : ""}. The first dog out there is the Alpha.
+        <div className="rounded-3xl bg-gradient-to-b from-amber-50 to-white p-6 text-center ring-1 ring-amber-200/70">
+          <p className="text-5xl" aria-hidden="true">
+            👑
+          </p>
+          <p className="mt-2 text-lg font-bold text-zinc-900">The crown is up for grabs</p>
+          <p className="mt-1 text-sm text-zinc-600">
+            No marks yet this {PERIOD_NAMES[period].toLowerCase()}
+            {size ? ` from ${sizeLabel(size).toLowerCase()} dogs` : ""}. The first dog out there is the Alpha.
+          </p>
         </div>
       )}
 
