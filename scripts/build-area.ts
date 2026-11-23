@@ -1,7 +1,7 @@
 // Builds the baseline "where dogs go" data for one pilot area from OpenStreetMap.
 //
-//   npm run data:sanford            (uses cached OSM downloads in .cache/osm)
-//   npm run data:sanford -- --refresh   (downloads fresh OSM data)
+//   npm run data:andersonville            (uses cached OSM downloads in .cache/osm)
+//   npm run data:andersonville -- --refresh   (downloads fresh OSM data)
 //
 // Output: public/data/areas/<id>.json (see AreaData in src/lib/feature-types.ts).
 // The output is derived from OpenStreetMap, so it is ODbL licensed.
@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { cellToLatLng, cellToParent, gridDisk, latLngToCell } from "h3-js";
 import { AREAS } from "../src/lib/areas.ts";
 import { FEATURE_CODE, type AreaData, type FeatureCode } from "../src/lib/feature-types.ts";
+import { D_LAT, D_LON, tileCenter, tileOf, tilesIn } from "../src/lib/grid.ts";
 
 const RES = 11;
 const RES_HOMES = 9;
@@ -26,7 +27,7 @@ const ENDPOINTS = [
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
   "https://overpass.private.coffee/api/interpreter",
 ];
-const USER_AGENT = "AlphaDog/0.1 (+https://alphadog.vercel.app)";
+const USER_AGENT = "AlphaDog/0.1 (https://github.com/Jstrev2/alphadog)";
 
 type LatLon = { lat: number; lon: number };
 type OsmElement = {
@@ -171,6 +172,62 @@ const percentile = (values: number[], p: number) => {
   return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
 };
 
+// ---------- turf block names ----------
+
+const NAMED_ROADS = new Set(["residential", "living_street", "unclassified", "tertiary", "secondary", "primary", "pedestrian"]);
+
+/** "North Clark Street" -> "Clark" */
+function shortStreetName(name: string): string {
+  return name
+    .replace(/^(North|South|East|West) /, "")
+    .replace(/ (Street|Avenue|Road|Drive|Boulevard|Place|Court|Parkway|Terrace|Lane)$/, "");
+}
+
+/**
+ * Names each turf block after the streets through its middle, like
+ * "Clark & Berwyn". Streets near the center line of a block count most.
+ */
+function blockNames(roads: OsmElement[], bbox: [number, number, number, number]): Record<string, string> {
+  const votes = new Map<string, Map<string, number>>();
+  const vote = (key: string, name: string, w: number) => {
+    const m = votes.get(key) ?? new Map<string, number>();
+    m.set(name, (m.get(name) ?? 0) + w);
+    votes.set(key, m);
+  };
+  for (const el of roads) {
+    const t = el.tags ?? {};
+    if (!t.name || !NAMED_ROADS.has(t.highway ?? "")) continue;
+    const name = shortStreetName(t.name);
+    const line = cleanGeom(el.geometry);
+    for (let i = 1; i < line.length; i++) {
+      const a = line[i - 1];
+      const b = line[i];
+      const dx = (b.lon - a.lon) * Math.cos(toRad(a.lat)) * 111_320;
+      const dy = (b.lat - a.lat) * 111_320;
+      const dir = Math.abs(dx) > Math.abs(dy) ? "ew" : "ns";
+      for (const p of sampleLine([a, b], 10)) {
+        const key = tileOf(p.lon, p.lat);
+        const [cx, cy] = tileCenter(key);
+        const off = dir === "ns" ? Math.abs(p.lon - cx) / (D_LON / 2) : Math.abs(p.lat - cy) / (D_LAT / 2);
+        const w = Math.max(0, 1 - off);
+        if (w > 0) vote(`${key}|${dir}`, name, w);
+      }
+    }
+  }
+  const best = (key: string, skip?: string) =>
+    [...(votes.get(key) ?? new Map<string, number>())]
+      .filter(([name, w]) => name !== skip && w >= 3)
+      .sort((x, y) => y[1] - x[1])[0]?.[0];
+  const out: Record<string, string> = {};
+  for (const key of tilesIn(bbox)) {
+    const ns = best(`${key}|ns`);
+    const ew = best(`${key}|ew`, ns);
+    const label = ns && ew ? `${ns} & ${ew}` : (ns ?? ew);
+    if (label) out[key] = label;
+  }
+  return out;
+}
+
 // ---------- main ----------
 
 async function main() {
@@ -214,6 +271,17 @@ async function main() {
       relation["leisure"~"^(park|dog_park)$"];
       way["landuse"~"^(grass|recreation_ground|village_green)$"];
     );
+    out geom;`,
+    cacheDir,
+    refresh,
+  );
+  await sleep(2000);
+  // Main roads (Foster, Ashland and the like). Kept separate so the big ways
+  // download above stays cached. Used for block names and a little walk weight.
+  const mainRoads = await overpass(
+    "main-roads",
+    `[out:json][timeout:180][bbox:${bbox}];
+    way["highway"="primary"]["name"];
     out geom;`,
     cacheDir,
     refresh,
@@ -276,8 +344,9 @@ async function main() {
   const walkWeight: Record<string, number> = {
     footway: 0.35, path: 0.35, pedestrian: 0.35, steps: 0.2, cycleway: 0.25, track: 0.2,
     living_street: 0.3, residential: 0.25, unclassified: 0.15, service: 0.15, tertiary: 0.08, secondary: 0.05,
+    primary: 0.04,
   };
-  for (const el of ways) {
+  for (const el of [...ways, ...mainRoads]) {
     const t = el.tags ?? {};
     if (t.highway && walkWeight[t.highway] !== undefined) {
       let weight = walkWeight[t.highway];
@@ -369,6 +438,8 @@ async function main() {
     cells.push([+lon.toFixed(5), +lat.toFixed(5), +score.toFixed(3)]);
   }
 
+  const tiles = blockNames([...ways, ...mainRoads], area.bbox);
+
   const out: AreaData = {
     v: 1,
     area: area.id,
@@ -378,6 +449,7 @@ async function main() {
     h3Res: RES,
     cells,
     features,
+    tiles,
   };
   mkdirSync("public/data/areas", { recursive: true });
   const file = `public/data/areas/${area.id}.json`;
@@ -388,6 +460,7 @@ async function main() {
   console.log(`\nWrote ${file}`);
   console.log(`  ${cells.length} scored cells, ${features.length} map spots, ${homeCount} homes`);
   console.log(`  spots by type code: ${JSON.stringify(counts)}`);
+  console.log(`  ${Object.keys(tiles).length} named turf blocks`);
   console.log(`  size: ${(JSON.stringify(out).length / 1024).toFixed(0)} KB`);
 }
 

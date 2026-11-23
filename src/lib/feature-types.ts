@@ -33,4 +33,6 @@ export type AreaData = {
   cells: [number, number, number][];
   /** [lon, lat, type code, optional name] */
   features: ([number, number, FeatureCode] | [number, number, FeatureCode, string])[];
+  /** Turf block key (see src/lib/grid.ts) to a street name like "Clark & Berwyn" */
+  tiles?: Record<string, string>;
 };

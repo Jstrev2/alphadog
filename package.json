@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "data:sanford": "node scripts/build-area.ts sanford-fl",
+    "data:andersonville": "node scripts/build-area.ts andersonville",
     "icons": "node scripts/make-icons.mjs"
   },
   "dependencies": {
