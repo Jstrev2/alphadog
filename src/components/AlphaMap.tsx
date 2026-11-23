@@ -5,46 +5,64 @@ import type { ExpressionSpecification, GeoJSONSource, Map as MapLibreMap } from 
 import "maplibre-gl/dist/maplibre-gl.css";
 import { isInArea, type Area } from "@/lib/areas";
 import { FEATURE_TYPES, type AreaData, type FeatureCode } from "@/lib/feature-types";
+import { getDogHeat, type BoardTile } from "@/lib/game";
+import { tileOf, tilePolygon, tilesIn } from "@/lib/grid";
 import { fetchReportBuckets, REPORT_KINDS, timeAgo, type ReportKind } from "@/lib/reports";
 import { getSupabase } from "@/lib/supabase";
 
-export type Mode = "seek" | "avoid";
+export type View = "turf" | "seek" | "avoid";
 export type MapStatus = "loading" | "ready" | "error";
 
 /** What the rest of the app can ask the map to do. */
 export type MapApi = {
-  /** [lon, lat] at the middle of the screen, where the report pin sits. */
+  /** [lon, lat] at the middle of the screen, where the placement pin sits. */
   getCenter: () => [number, number];
   /** Flies to the walker's location. Resolves false if location isn't available. */
   locate: () => Promise<boolean>;
-  /** Reloads walker reports for the current view. */
+  flyTo: (lon: number, lat: number, zoom?: number) => void;
+  /** Reloads walker reports and heat for the current view. */
   refreshReports: () => void;
 };
 
 type Props = {
   area: Area;
-  mode: Mode;
+  view: View;
+  board: BoardTile[];
+  /** Blocks drawn as the hidden zone (yours, or a preview while picking one) */
+  zone: string[] | null;
+  selectedTile: string | null;
   /** Bump to fly back to the pilot area. */
   recenterKey: number;
   onStatus: (status: MapStatus) => void;
+  onData: (data: AreaData) => void;
   onOutsideArea: (outside: boolean) => void;
+  onTileClick: (tile: string | null) => void;
   onApi: (api: MapApi | null) => void;
 };
 
-type PointFeature = GeoJSON.Feature<GeoJSON.Point, Record<string, unknown>>;
-const point = (lon: number, lat: number, properties: Record<string, unknown>): PointFeature => ({
+type Feature = GeoJSON.Feature<GeoJSON.Geometry, Record<string, unknown>>;
+const point = (lon: number, lat: number, properties: Record<string, unknown>): Feature => ({
   type: "Feature",
   geometry: { type: "Point", coordinates: [lon, lat] },
   properties,
 });
-const collection = (features: PointFeature[]): GeoJSON.FeatureCollection<GeoJSON.Point> => ({
-  type: "FeatureCollection",
-  features,
+const collection = (features: Feature[]): GeoJSON.FeatureCollection => ({ type: "FeatureCollection", features });
+const tileFeature = (key: string, properties: Record<string, unknown> = {}): Feature => ({
+  type: "Feature",
+  geometry: tilePolygon(key),
+  properties: { key, ...properties },
 });
 
 const STYLE_URL = process.env.NEXT_PUBLIC_MAP_STYLE_URL || "https://tiles.openfreemap.org/styles/positron";
 
-const HEAT_COLORS: Record<Mode, ExpressionSpecification> = {
+const HEAT_COLORS: Record<View, ExpressionSpecification> = {
+  turf: [
+    "interpolate", ["linear"], ["heatmap-density"],
+    0, "rgba(16,185,129,0)",
+    0.2, "rgba(167,243,208,0.2)",
+    0.6, "rgba(52,211,153,0.35)",
+    1, "rgba(5,150,105,0.5)",
+  ],
   seek: [
     "interpolate", ["linear"], ["heatmap-density"],
     0, "rgba(16,185,129,0)",
@@ -65,6 +83,8 @@ const HEAT_COLORS: Record<Mode, ExpressionSpecification> = {
   ],
 };
 
+export const TURF_COLORS = { mine: "#10b981", taken: "#f97316", local: "#71717a" } as const;
+
 const SPOT_COLOR = [
   "match", ["get", "t"],
   ...Object.entries(FEATURE_TYPES).flatMap(([code, type]) => [Number(code), type.color]),
@@ -78,9 +98,7 @@ const REPORT_PIN_COLOR = [
   "#64748b",
 ] as unknown as ExpressionSpecification;
 
-const cellFeatures = (data: AreaData) => data.cells.map(([lon, lat, s]) => point(lon, lat, { s }));
-const spotFeatures = (data: AreaData) =>
-  data.features.map(([lon, lat, t, name]) => point(lon, lat, { t, name: name ?? null }));
+const TURF_LAYERS = ["turf-fill", "turf-grid", "turf-mine"];
 
 async function loadAreaData(area: Area): Promise<AreaData | null> {
   try {
@@ -92,21 +110,26 @@ async function loadAreaData(area: Area): Promise<AreaData | null> {
   }
 }
 
-export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideArea, onApi }: Props) {
+export default function AlphaMap(props: Props) {
+  const { area, view, board, zone, selectedTile, recenterKey } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const modeRef = useRef(mode);
-  const callbacksRef = useRef({ onStatus, onOutsideArea, onApi });
+  const loadedRef = useRef(false);
+  const viewRef = useRef(view);
+  const callbacksRef = useRef(props);
+  const stateRef = useRef({ board, zone, selectedTile });
 
   useEffect(() => {
-    callbacksRef.current = { onStatus, onOutsideArea, onApi };
-  }, [onStatus, onOutsideArea, onApi]);
+    callbacksRef.current = props;
+    stateRef.current = { board, zone, selectedTile };
+  });
 
   // Create the map once per area.
   useEffect(() => {
     let cancelled = false;
     let map: MapLibreMap | null = null;
     let stopReports = () => {};
+    loadedRef.current = false;
     callbacksRef.current.onStatus("loading");
 
     (async () => {
@@ -121,7 +144,7 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
         style: STYLE_URL,
         center: area.center,
         zoom: area.zoom,
-        minZoom: 10,
+        minZoom: 11,
         maxZoom: 19,
         dragRotate: false,
         pitchWithRotate: false,
@@ -143,9 +166,9 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
         callbacksRef.current.onOutsideArea(!isInArea(area, e.coords.longitude, e.coords.latitude));
       });
 
-      // ---- Walker reports ----
+      // ---- Walker reports and dog heat ----
       const m = map;
-      let baseline: PointFeature[] = [];
+      let baseline: Feature[] = [];
       let reportTimer: ReturnType<typeof setTimeout> | undefined;
       let reportRequest = 0;
 
@@ -163,18 +186,16 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
         ];
         if (box[2] - box[0] > 0.5 || box[3] - box[1] > 0.5) return;
         const request = ++reportRequest;
-        fetchReportBuckets(sb, box)
-          .then((buckets) => {
+        Promise.all([fetchReportBuckets(sb, box), getDogHeat(sb, box)])
+          .then(([buckets, heat]) => {
             if (cancelled || request !== reportRequest) return;
-            // Pee and poop blend into the heat (no exact pins, for privacy).
-            // More reports in the same spot add more weight.
-            const reportHeat = buckets
-              .filter((r) => REPORT_KINDS[r.kind] && !REPORT_KINDS[r.kind].pin)
-              .map((r) => point(r.lon, r.lat, { s: Math.min(1, 0.6 + 0.2 * (r.n - 1)) }));
+            // Marks and pee/poop reports blend into the heat, only where 3 or
+            // more people went (the database enforces that). Never pins.
+            const dogHeat = heat.map((h) => point(h.lon, h.lat, { s: Math.min(1, 0.5 + 0.1 * h.n) }));
             const pins = buckets
               .filter((r) => REPORT_KINDS[r.kind]?.pin)
               .map((r) => point(r.lon, r.lat, { kind: r.kind, n: r.n, last: r.last_at }));
-            (m.getSource("baseline") as GeoJSONSource | undefined)?.setData(collection([...baseline, ...reportHeat]));
+            (m.getSource("baseline") as GeoJSONSource | undefined)?.setData(collection([...baseline, ...dogHeat]));
             (m.getSource("report-pins") as GeoJSONSource | undefined)?.setData(collection(pins));
           })
           .catch(() => {});
@@ -203,6 +224,7 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
               { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 },
             );
           }),
+        flyTo: (lon, lat, zoom) => m.flyTo({ center: [lon, lat], zoom: zoom ?? Math.max(16, m.getZoom()) }),
         refreshReports: loadReports,
       });
 
@@ -213,13 +235,20 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
           callbacksRef.current.onStatus("error");
           return;
         }
+        callbacksRef.current.onData(data);
 
-        baseline = cellFeatures(data);
+        baseline = data.cells.map(([lon, lat, s]) => point(lon, lat, { s }));
         map.addSource("baseline", { type: "geojson", data: collection(baseline) });
-        map.addSource("spots", { type: "geojson", data: collection(spotFeatures(data)) });
+        map.addSource("spots", {
+          type: "geojson",
+          data: collection(data.features.map(([lon, lat, t, name]) => point(lon, lat, { t, name: name ?? null }))),
+        });
         map.addSource("report-pins", { type: "geojson", data: collection([]) });
+        map.addSource("turf", { type: "geojson", data: collection([]) });
+        map.addSource("zone", { type: "geojson", data: collection([]) });
+        map.addSource("selected", { type: "geojson", data: collection([]) });
 
-        // Draw the heat under street and place labels so names stay readable.
+        // Draw heat and turf under street and place labels so names stay readable.
         const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
         map.addLayer(
           {
@@ -227,18 +256,67 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
             type: "heatmap",
             source: "baseline",
             paint: {
-              // Push top scores up relative to ordinary streets so hot spots stand out.
               "heatmap-weight": ["^", ["get", "s"], 1.3],
               "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 11, 0.9, 13, 1.3, 15, 1.4, 17, 1.4, 19, 1.2],
               // Cells are about 50 m apart. Keep the radius at roughly twice that
               // spacing on screen so the hexagon grid never shows through.
               "heatmap-radius": ["interpolate", ["exponential", 2], ["zoom"], 11, 4, 14, 12, 15, 24, 16, 50, 17, 100, 19, 400],
-              "heatmap-color": HEAT_COLORS[modeRef.current],
+              "heatmap-color": HEAT_COLORS[viewRef.current],
               "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 11, 0.85, 17, 0.75, 19, 0.6],
             },
           },
           firstLabel,
         );
+        map.addLayer(
+          {
+            id: "turf-fill",
+            type: "fill",
+            source: "turf",
+            paint: {
+              "fill-color": ["match", ["get", "state"], "mine", TURF_COLORS.mine, "taken", TURF_COLORS.taken, "local", TURF_COLORS.local, "#000000"],
+              "fill-opacity": ["match", ["get", "state"], "mine", 0.42, "taken", 0.32, "local", 0.22, 0],
+            },
+          },
+          firstLabel,
+        );
+        map.addLayer(
+          {
+            id: "turf-grid",
+            type: "line",
+            source: "turf",
+            minzoom: 13,
+            paint: { "line-color": "#0f172a", "line-opacity": 0.14, "line-width": 1 },
+          },
+          firstLabel,
+        );
+        map.addLayer(
+          {
+            id: "turf-mine",
+            type: "line",
+            source: "turf",
+            filter: ["==", ["get", "state"], "mine"],
+            paint: { "line-color": "#047857", "line-width": 2 },
+          },
+          firstLabel,
+        );
+        map.addLayer({
+          id: "zone-fill",
+          type: "fill",
+          source: "zone",
+          paint: { "fill-color": "#7c3aed", "fill-opacity": 0.12 },
+        });
+        map.addLayer({
+          id: "zone-line",
+          type: "line",
+          source: "zone",
+          paint: { "line-color": "#7c3aed", "line-width": 2, "line-dasharray": [2, 1.5] },
+        });
+        map.addLayer({
+          id: "selected-line",
+          type: "line",
+          source: "selected",
+          paint: { "line-color": "#18181b", "line-width": 3 },
+        });
         map.addLayer({
           id: "spots",
           type: "circle",
@@ -281,49 +359,49 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
           },
         });
 
-        map.on("click", "report-pins", (e) => {
-          const f = e.features?.[0];
-          if (!f || f.geometry.type !== "Point" || !map) return;
-          const kind = String(f.properties.kind) as ReportKind;
-          const n = Number(f.properties.n);
+        const popup = (lngLat: [number, number], title: string, sub?: string) => {
           const box = document.createElement("div");
-          const title = document.createElement("strong");
-          title.textContent = REPORT_KINDS[kind]?.label ?? "Report";
-          const sub = document.createElement("div");
-          const when = timeAgo(String(f.properties.last));
-          sub.textContent = n > 1 ? `Reported ${n} times, last ${when}` : `Reported ${when}`;
-          box.append(title, sub);
-          new maplibregl.Popup({ closeButton: false, offset: 12 })
-            .setLngLat(f.geometry.coordinates as [number, number])
-            .setDOMContent(box)
-            .addTo(map);
-        });
+          const t = document.createElement("strong");
+          t.textContent = title;
+          box.append(t);
+          if (sub) {
+            const s = document.createElement("div");
+            s.textContent = sub;
+            box.append(s);
+          }
+          new maplibregl.Popup({ closeButton: false, offset: 10 }).setLngLat(lngLat).setDOMContent(box).addTo(m);
+        };
 
-        for (const layer of ["spots", "dog-parks"]) {
-          map.on("click", layer, (e) => {
-            const f = e.features?.[0];
-            if (!f || f.geometry.type !== "Point" || !map) return;
-            const code = Number(f.properties.t) as FeatureCode;
-            const box = document.createElement("div");
-            const title = document.createElement("strong");
-            title.textContent = FEATURE_TYPES[code]?.label ?? "Spot";
-            box.append(title);
-            if (f.properties.name) {
-              const sub = document.createElement("div");
-              sub.textContent = String(f.properties.name);
-              box.append(sub);
+        // One click handler: map spots and report pins first, then turf blocks.
+        map.on("click", (e) => {
+          const hit = m.queryRenderedFeatures(e.point, { layers: ["report-pins", "dog-parks", "spots"] })[0];
+          if (hit && hit.geometry.type === "Point") {
+            const at = hit.geometry.coordinates as [number, number];
+            if (hit.layer.id === "report-pins") {
+              const kind = String(hit.properties.kind) as ReportKind;
+              const n = Number(hit.properties.n);
+              const when = timeAgo(String(hit.properties.last));
+              popup(at, REPORT_KINDS[kind]?.label ?? "Report", n > 1 ? `Reported ${n} times, last ${when}` : `Reported ${when}`);
+            } else {
+              const code = Number(hit.properties.t) as FeatureCode;
+              popup(at, FEATURE_TYPES[code]?.label ?? "Spot", hit.properties.name ? String(hit.properties.name) : undefined);
             }
-            new maplibregl.Popup({ closeButton: false, offset: 10 })
-              .setLngLat(f.geometry.coordinates as [number, number])
-              .setDOMContent(box)
-              .addTo(map);
-          });
-        }
+            return;
+          }
+          if (viewRef.current !== "turf") return;
+          const { lng, lat } = e.lngLat;
+          callbacksRef.current.onTileClick(isInArea(area, lng, lat) ? tileOf(lng, lat) : null);
+        });
         for (const layer of ["spots", "dog-parks", "report-pins"]) {
-          map.on("mouseenter", layer, () => map && (map.getCanvas().style.cursor = "pointer"));
-          map.on("mouseleave", layer, () => map && (map.getCanvas().style.cursor = ""));
+          map.on("mouseenter", layer, () => (m.getCanvas().style.cursor = "pointer"));
+          map.on("mouseleave", layer, () => (m.getCanvas().style.cursor = ""));
         }
 
+        loadedRef.current = true;
+        drawTurf(m, area, stateRef.current.board);
+        drawZone(m, stateRef.current.zone);
+        drawSelected(m, stateRef.current.selectedTile);
+        applyView(m, viewRef.current);
         callbacksRef.current.onStatus("ready");
         loadReports();
 
@@ -343,15 +421,26 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
       callbacksRef.current.onApi(null);
       map?.remove();
       mapRef.current = null;
+      loadedRef.current = false;
     };
   }, [area]);
 
-  // Swap colors when the mode changes.
   useEffect(() => {
-    modeRef.current = mode;
-    const map = mapRef.current;
-    if (map?.getLayer("baseline-heat")) map.setPaintProperty("baseline-heat", "heatmap-color", HEAT_COLORS[mode]);
-  }, [mode]);
+    viewRef.current = view;
+    if (mapRef.current && loadedRef.current) applyView(mapRef.current, view);
+  }, [view]);
+
+  useEffect(() => {
+    if (mapRef.current && loadedRef.current) drawTurf(mapRef.current, area, board);
+  }, [board, area]);
+
+  useEffect(() => {
+    if (mapRef.current && loadedRef.current) drawZone(mapRef.current, zone);
+  }, [zone]);
+
+  useEffect(() => {
+    if (mapRef.current && loadedRef.current) drawSelected(mapRef.current, selectedTile);
+  }, [selectedTile]);
 
   useEffect(() => {
     if (recenterKey > 0) mapRef.current?.flyTo({ center: area.center, zoom: area.zoom });
@@ -364,4 +453,27 @@ export default function AlphaMap({ area, mode, recenterKey, onStatus, onOutsideA
       <div ref={containerRef} className="h-full w-full" aria-label={`Map of ${area.name}`} role="region" />
     </div>
   );
+}
+
+function applyView(map: MapLibreMap, view: View) {
+  map.setPaintProperty("baseline-heat", "heatmap-color", HEAT_COLORS[view]);
+  for (const id of TURF_LAYERS) map.setLayoutProperty(id, "visibility", view === "turf" ? "visible" : "none");
+}
+
+function drawTurf(map: MapLibreMap, area: Area, board: BoardTile[]) {
+  const held = new Map(board.map((b) => [b.tile, b]));
+  const keys = new Set([...tilesIn(area.bbox), ...held.keys()]);
+  const features = [...keys].map((key) => {
+    const b = held.get(key);
+    return tileFeature(key, { state: b?.state ?? "open", points: b?.points ?? 0 });
+  });
+  (map.getSource("turf") as GeoJSONSource | undefined)?.setData(collection(features));
+}
+
+function drawZone(map: MapLibreMap, zone: string[] | null) {
+  (map.getSource("zone") as GeoJSONSource | undefined)?.setData(collection((zone ?? []).map((k) => tileFeature(k))));
+}
+
+function drawSelected(map: MapLibreMap, tile: string | null) {
+  (map.getSource("selected") as GeoJSONSource | undefined)?.setData(collection(tile ? [tileFeature(tile)] : []));
 }

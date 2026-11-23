@@ -1,9 +1,9 @@
 # AlphaDog
 
-A live map of where dogs go. Think Waze for dog walkers: a baseline heat map
-built from OpenStreetMap (hydrants, trees, grass strips, parks), sharpened by
-reports from walkers. Some walkers want the hot spots so their dog goes
-quickly. Others want to avoid them because their dog reacts to other dogs.
+Mark your turf. A neighborhood game for dog walkers: tap Mark when your dog
+pees, claim blocks, win badges, take the Alpha crown, and woof at the dogs
+next door. Underneath is a heat map of where dogs go, built from
+OpenStreetMap and sharpened by marks and walker reports.
 
 Product notes live in [`docs/PRODUCT.md`](docs/PRODUCT.md).
 
@@ -38,12 +38,20 @@ The heat map comes from a prebuilt file per pilot area in
 `scripts/build-area.ts`:
 
 ```bash
-npm run data:sanford               # reuses the OSM download cached in .cache/
-npm run data:sanford -- --refresh  # downloads fresh OpenStreetMap data
+npm run data:andersonville               # reuses the OSM download cached in .cache/
+npm run data:andersonville -- --refresh  # downloads fresh OpenStreetMap data
 ```
 
 The public OpenStreetMap servers are often busy, so a fresh download can take
 several minutes. Commit the updated JSON file.
+
+The badges also need the area's hydrants, poles and dog parks in the database.
+After rebuilding, regenerate that migration and run it in the Supabase SQL
+editor:
+
+```bash
+node scripts/osm-spots-sql.ts andersonville > supabase/migrations/<timestamp>_osm_spots_andersonville.sql
+```
 
 New pilot areas go in `src/lib/areas.ts`, plus a `data:<area>` script in
 `package.json`.

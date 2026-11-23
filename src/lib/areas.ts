@@ -11,11 +11,15 @@ export type Area = {
 
 export const AREAS: Area[] = [
   {
-    id: "sanford-fl",
-    name: "Sanford, FL",
-    bbox: [-81.38, 28.76, -81.31, 28.82],
-    center: [-81.345, 28.79],
-    zoom: 13.5,
+    // Andersonville as OpenStreetMap outlines it (Lawrence to Ardmore,
+    // Ravenswood to Broadway), padded a few blocks so walks that start in the
+    // neighborhood are covered, plus the lakefront dog parks from Bryn Mawr
+    // down to Montrose Dog Beach.
+    id: "andersonville",
+    name: "Andersonville",
+    bbox: [-87.68, 41.966, -87.64, 41.991],
+    center: [-87.668, 41.979],
+    zoom: 14.5,
   },
 ];
 

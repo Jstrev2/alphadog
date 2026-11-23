@@ -23,9 +23,9 @@ body {
   overscroll-behavior: none;
 }
 
-/* MapLibre controls: bigger touch targets, clear of the phone's home bar */
+/* MapLibre controls: bigger touch targets, level with the Mark button */
 .maplibregl-ctrl-bottom-right {
-  margin-bottom: env(safe-area-inset-bottom);
+  margin-bottom: 10px;
 }
 .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group {
   border-radius: 16px;
